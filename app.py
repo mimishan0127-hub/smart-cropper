@@ -4,6 +4,7 @@ import json
 import time
 import zipfile
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 import streamlit as st
 from pydantic import BaseModel, Field
@@ -13,22 +14,19 @@ from google.genai import types
 # ----------------- 頁面基本配置 -----------------
 st.set_page_config(
     page_title="AI 智慧多比例攝影裁切神器",
-    page_icon="✨",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# 注入跨平台響應式（手機、平板、電腦）CSS
+# 跨平台響應式與極致簡潔 CSS
 st.markdown("""
 <style>
-    /* 基礎容器配置 */
     .block-container {
         padding-top: 1.5rem;
         padding-bottom: 3rem;
         max-width: 1050px;
     }
-
-    /* 頂部 Hero Banner */
     .hero-container {
         background: linear-gradient(135deg, #eff6ff 0%, #fdfbf7 100%);
         border: 1px solid #bfdbfe;
@@ -50,8 +48,6 @@ st.markdown("""
         margin: 0;
         line-height: 1.5;
     }
-
-    /* 區塊卡片外框 */
     div[data-testid="stVerticalBlockBorderWrapper"] {
         background-color: #ffffff;
         border-radius: 14px;
@@ -60,8 +56,6 @@ st.markdown("""
         padding: 14px;
         margin-bottom: 14px;
     }
-
-    /* 尺寸卡片說明文字 */
     .ratio-desc {
         color: #6b7280;
         font-size: 0.8rem;
@@ -69,29 +63,11 @@ st.markdown("""
         margin-top: -6px;
         margin-bottom: 10px;
     }
-
-    /* ================= 📱 手機與平板專用響應式斷點 ================= */
-    
-    /* 針對平板（直向）與大型手機螢幕 (螢幕寬度小於 992px) */
-    @media (max-width: 992px) {
-        .hero-title {
-            font-size: 1.7rem;
-        }
-        .hero-subtitle {
-            font-size: 0.95rem;
-        }
-    }
-
-    /* 針對一般手機螢幕 (螢幕寬度小於 768px) */
     @media (max-width: 768px) {
         .block-container {
             padding-left: 0.8rem !important;
             padding-right: 0.8rem !important;
             padding-top: 1rem !important;
-        }
-        .hero-container {
-            padding: 16px;
-            border-radius: 12px;
         }
         .hero-title {
             font-size: 1.4rem;
@@ -99,8 +75,6 @@ st.markdown("""
         .hero-subtitle {
             font-size: 0.88rem;
         }
-        
-        /* 手機端讓 Streamlit 的 columns 自動垂直堆疊，避免被橫向擠爆 */
         div[data-testid="stHorizontalBlock"] {
             flex-wrap: wrap !important;
             gap: 8px !important;
@@ -109,18 +83,10 @@ st.markdown("""
             min-width: 100% !important;
             flex: 1 1 100% !important;
         }
-        
-        /* 按鈕與勾選框在手機上擴大觸控區 */
-        button {
-            padding-top: 10px !important;
-            padding-bottom: 10px !important;
-            font-size: 1rem !important;
-        }
     }
 </style>
 """, unsafe_allow_html=True)
 
-# 讀取後台設定的 API Key
 api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
 client = genai.Client(api_key=api_key) if api_key else None
 
@@ -129,9 +95,9 @@ class GroupSubjectAnalysis(BaseModel):
     group_box_2d: list[int] = Field(description="Bounding box of main group [ymin, xmin, ymax, xmax] scaled 0 to 1000")
     face_top_y: int = Field(description="Highest point of faces/heads (0-1000)")
 
-def get_optimized_ai_input(img: Image.Image) -> Image.Image:
-    """縮小圖片尺寸以加快上傳與分析"""
-    max_dim = 1024
+def get_ultra_fast_ai_input(img: Image.Image) -> Image.Image:
+    """將圖片縮小至最長邊 768px，大幅加快 API 上傳與辨識"""
+    max_dim = 768
     w, h = img.size
     if max(w, h) > max_dim:
         scale = max_dim / max(w, h)
@@ -139,17 +105,15 @@ def get_optimized_ai_input(img: Image.Image) -> Image.Image:
     return img
 
 def analyze_all_subjects(pil_img: Image.Image):
-    """呼叫 Gemini 進行主角群體判定與透氣留白分析"""
+    """送出縮圖進行極速 AI 分析"""
     if not client:
         return {"subject_category": "people", "group_box_2d": [250, 200, 950, 950], "face_top_y": 380}
 
-    ai_img = get_optimized_ai_input(pil_img)
+    ai_img = get_ultra_fast_ai_input(pil_img)
     prompt = (
-        "You are an expert director of photography. Analyze composition.\n"
-        "1. If humans present, return 'group_box_2d' [ymin, xmin, ymax, xmax] (0-1000) enclosing ALL persons.\n"
+        "Analyze composition: 1. If humans present, return 'group_box_2d' [ymin, xmin, ymax, xmax] (0-1000) enclosing ALL persons.\n"
         "2. Identify 'face_top_y' (0-1000).\n"
-        "3. If no humans, apply to animal > architecture > vehicle.\n"
-        "Output JSON matching schema."
+        "3. If no humans, apply to animal > architecture > vehicle."
     )
 
     for attempt in range(2):
@@ -166,12 +130,11 @@ def analyze_all_subjects(pil_img: Image.Image):
             return json.loads(response.text)
         except Exception:
             if attempt == 0:
-                time.sleep(1.5)
+                time.sleep(1.0)
                 continue
             return {"subject_category": "people", "group_box_2d": [250, 200, 950, 950], "face_top_y": 380}
 
 def calculate_adaptive_crop(img_size: tuple[int, int], target_ratio: float, info: dict) -> tuple[int, int, int, int]:
-    """計算自適應構圖裁切框，嚴防切斷主角群"""
     orig_w, orig_h = img_size
     orig_ratio = orig_w / orig_h
 
@@ -236,20 +199,41 @@ def calculate_adaptive_crop(img_size: tuple[int, int], target_ratio: float, info
 
     return int(left), int(top), int(right), int(bottom)
 
+def process_one_image_task(file, target_ratios):
+    """單張圖片的獨立工作（供多執行緒並行）"""
+    with Image.open(file) as img:
+        # 如果是 RGBA 或 P 模式先轉換，避免裁切時重複開銷
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+            
+        base_name = Path(file.name).stem
+        info = analyze_all_subjects(img)
+        
+        results = []
+        for label, ratio in target_ratios.items():
+            l, t, r, b = calculate_adaptive_crop(img.size, ratio, info)
+            cropped = img.crop((l, t, r, b))
+            
+            img_byte_arr = io.BytesIO()
+            # 極速儲存：品質 88，不啟用耗 CPU 的 optimize
+            cropped.save(img_byte_arr, format='JPEG', quality=88)
+            filename = f"{base_name}_{label}.jpg"
+            results.append((filename, img_byte_arr.getvalue(), cropped))
+            
+        return results
+
 # ----------------- 介面排版 -----------------
 
-# 頂部 Hero 卡片
 st.markdown("""
 <div class="hero-container">
-    <div class="hero-title">✨ AI 智慧多比例攝影裁切神器</div>
-    <p class="hero-subtitle">智能鎖定人物主角群體，自動套用最佳攝影構圖，一鍵批量產出多種社群完美比例！支援手機、平板與電腦全平台操作。</p>
+    <div class="hero-title">⚡ AI 智慧多比例攝影裁切神器</div>
+    <p class="hero-subtitle">智能鎖定人物主角群體，極速多執行緒並行構圖裁切，全面支援手機、平板與電腦！</p>
 </div>
 """, unsafe_allow_html=True)
 
 if not client:
     st.warning("⚠️ 系統尚未偵測到 GEMINI_API_KEY，請在雲端後台 Settings ➔ Secrets 中進行設定。")
 
-# 狀態管理函式：解決全選/清除失靈問題
 RATIO_KEYS = ["cb_16_9", "cb_9_16", "cb_3_4", "cb_4_3", "cb_1_1"]
 for k in RATIO_KEYS:
     if k not in st.session_state:
@@ -259,7 +243,6 @@ def set_all_checkboxes(status: bool):
     for k in RATIO_KEYS:
         st.session_state[k] = status
 
-# 區塊一：尺寸規格設定卡片
 with st.container(border=True):
     col_t1, col_t2 = st.columns([6, 4])
     with col_t1:
@@ -299,7 +282,6 @@ with st.container(border=True):
         st.markdown('<p class="ratio-desc">適用 社群頭貼 / 經典方形貼文</p>', unsafe_allow_html=True)
         if c5: selected_ratios["1-1"] = 1.0
 
-# 區塊二：照片上傳卡片
 with st.container(border=True):
     st.markdown("#### 📁 第二步：上傳照片（上限 10 張）")
     uploaded_files = st.file_uploader(
@@ -319,46 +301,37 @@ with st.container(border=True):
         else:
             st.success(f"✨ 已成功載入 **{len(uploaded_files)}** 張照片，已準備好進行處理。")
 
-# 區塊三：執行與結果卡片
 if uploaded_files and not has_file_count_error:
     with st.container(border=True):
-        st.markdown("#### 🚀 第三步：開始產出")
+        st.markdown("#### 🚀 第三步：極速產出")
         if not selected_ratios:
             st.warning("⚠️ 請在上方第一步中至少勾選一種你想裁切的尺寸規格喔！")
         else:
-            if st.button("開始 AI 智慧構圖與極速裁切", type="primary", use_container_width=True):
+            if st.button("⚡ 開始極速並行裁切", type="primary", use_container_width=True):
                 zip_buffer = io.BytesIO()
                 preview_list = []
                 
-                progress_bar = st.progress(0)
                 status_box = st.empty()
+                status_box.info("🚀 啟動多核心並行處理中，請稍候...")
 
+                t_start = time.time()
                 total_files = len(uploaded_files)
-                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                    for idx, file in enumerate(uploaded_files):
-                        status_box.markdown(f"🤖 **正在深度分析第 {idx + 1}/{total_files} 張照片的主角與空間佈局...** `{file.name}`")
-                        
-                        img = Image.open(file)
-                        base_name = Path(file.name).stem
-                        info = analyze_all_subjects(img)
+                
+                # 多執行緒並行：3 個執行緒同時連線 Google AI 與裁切
+                max_workers = min(3, total_files)
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(process_one_image_task, f, selected_ratios) for f in uploaded_files]
+                    
+                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                        for future in futures:
+                            items = future.result()
+                            for filename, img_bytes, preview_img in items:
+                                zip_file.writestr(filename, img_bytes)
+                                preview_list.append((preview_img, filename))
 
-                        for label, ratio in selected_ratios.items():
-                            l, t, r, b = calculate_adaptive_crop(img.size, ratio, info)
-                            cropped = img.crop((l, t, r, b))
-                            
-                            if cropped.mode in ("RGBA", "P"):
-                                cropped = cropped.convert("RGB")
-
-                            img_byte_arr = io.BytesIO()
-                            cropped.save(img_byte_arr, format='JPEG', quality=92, optimize=True)
-                            filename = f"{base_name}_{label}.jpg"
-                            zip_file.writestr(filename, img_byte_arr.getvalue())
-                            preview_list.append((cropped, filename))
-
-                        progress_bar.progress((idx + 1) / total_files)
-
+                elapsed = time.time() - t_start
                 status_box.empty()
-                st.success(f"🎉 全部處理完成！共為你產出 **{len(preview_list)}** 張自適應裁切照片。")
+                st.success(f"⚡ 極速處理完成！共生成 **{len(preview_list)}** 張照片（耗時僅 {elapsed:.1f} 秒）。")
 
                 st.download_button(
                     label="📥 一鍵下載所有裁切成果包 (.ZIP)",
