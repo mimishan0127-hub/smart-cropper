@@ -14,12 +14,12 @@ from google.genai import types
 # ----------------- 頁面基本配置 -----------------
 st.set_page_config(
     page_title="AI 智慧多比例攝影裁切神器",
-    page_icon="⚡",
+    page_icon="📸",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# 響應式 CSS
+# 響應式 CSS 美化
 st.markdown("""
 <style>
     .block-container {
@@ -86,14 +86,24 @@ st.markdown("""
 api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
 client = genai.Client(api_key=api_key) if api_key else None
 
-class GroupSubjectAnalysis(BaseModel):
-    subject_category: str = Field(description="Dominant category: 'people', 'animal', 'architecture', 'vehicle'")
-    group_box_2d: list[int] = Field(description="Bounding box of main group [ymin, xmin, ymax, xmax] scaled 0 to 1000")
-    face_top_y: int = Field(description="Highest point of faces/heads (0-1000)")
+# 定義結構化回傳格式：類別、統一主角框、頭頂高度、推薦攝影構圖法
+class StrictSubjectAnalysis(BaseModel):
+    subject_category: str = Field(
+        description="The highest priority category present: 'people', 'animal', 'architecture', or 'vehicle'"
+    )
+    group_box_2d: list[int] = Field(
+        description="Tight bounding box enclosing ALL entities of the primary subject group (e.g. all people in frame): [ymin, xmin, ymax, xmax] scaled 0 to 1000"
+    )
+    face_top_y: int = Field(
+        description="Topmost point of heads/faces or top edge of the subject (0-1000)"
+    )
+    composition_style: str = Field(
+        description="Best aesthetic composition rule: 'rule_of_thirds_left', 'rule_of_thirds_right', 'center_symmetry', or 'golden_ratio'"
+    )
 
-def get_ultra_low_res_ai_input(img: Image.Image) -> Image.Image:
-    """縮小至最長邊 512px，使單張上傳體積降至數十 KB，大幅提升速度"""
-    max_dim = 512
+def prepare_ai_image(img: Image.Image) -> Image.Image:
+    """保持適度清晰度（最長邊 800px），兼顧極速與精準物件偵測"""
+    max_dim = 800
     w, h = img.size
     if max(w, h) > max_dim:
         scale = max_dim / max(w, h)
@@ -101,27 +111,43 @@ def get_ultra_low_res_ai_input(img: Image.Image) -> Image.Image:
     return img
 
 def analyze_single_image(pil_img: Image.Image) -> dict:
-    """單張圖片 AI 分析，容錯高且穩定"""
-    default_res = {"subject_category": "people", "group_box_2d": [250, 200, 950, 950], "face_top_y": 380}
+    """呼叫 Gemini 進行專業攝影構圖與主體判定"""
+    default_res = {
+        "subject_category": "people",
+        "group_box_2d": [250, 200, 900, 800],
+        "face_top_y": 300,
+        "composition_style": "center_symmetry"
+    }
     if not client:
         return default_res
 
-    low_img = get_ultra_low_res_ai_input(pil_img)
+    ai_img = prepare_ai_image(pil_img)
     prompt = (
-        "You are an expert photography director. Analyze composition.\n"
-        "1. If humans present, return 'group_box_2d' [ymin, xmin, ymax, xmax] (0-1000) enclosing ALL persons.\n"
-        "2. Identify 'face_top_y' (0-1000).\n"
-        "3. If no humans, apply to animal > architecture > vehicle.\n"
+        "You are an award-winning director of photography and photo editor.\n"
+        "Strictly identify the primary subject based on hierarchy:\n"
+        "1. People (Highest priority: if any humans exist, include ALL humans together as a group)\n"
+        "2. Animals (Pets, wildlife)\n"
+        "3. Architecture (Prominent temples, monuments, buildings)\n"
+        "4. Vehicles (Cars, motorcycles, boats)\n\n"
+        "Tasks:\n"
+        "- 'subject_category': set to people, animal, architecture, or vehicle.\n"
+        "- 'group_box_2d': tight bounding box [ymin, xmin, ymax, xmax] (0-1000) that wraps the entire primary group.\n"
+        "- 'face_top_y': highest Y coordinate of heads/faces (or subject top edge) (0-1000).\n"
+        "- 'composition_style': determine optimal framing rule:\n"
+        "   * 'rule_of_thirds_left': if subject should align to left third line.\n"
+        "   * 'rule_of_thirds_right': if subject should align to right third line.\n"
+        "   * 'center_symmetry': if subject is symmetrical, wide group, or centered architecture.\n"
+        "   * 'golden_ratio': for aesthetic diagonal/natural balancing.\n"
         "Output JSON matching schema."
     )
 
     try:
         response = client.models.generate_content(
             model="gemini-3.8-flash",
-            contents=[low_img, prompt],
+            contents=[ai_img, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=GroupSubjectAnalysis,
+                response_schema=StrictSubjectAnalysis,
                 temperature=0.1
             ),
         )
@@ -130,12 +156,16 @@ def analyze_single_image(pil_img: Image.Image) -> dict:
         return default_res
 
 def calculate_adaptive_crop(img_size: tuple[int, int], target_ratio: float, info: dict) -> tuple[int, int, int, int]:
+    """根據攝影法則定位，並做硬性邊界保護，確保主角絕不被切除"""
     orig_w, orig_h = img_size
     orig_ratio = orig_w / orig_h
 
-    ymin, xmin, ymax, xmax = info["group_box_2d"]
+    ymin, xmin, ymax, xmax = info.get("group_box_2d", [250, 200, 900, 800])
     face_top = info.get("face_top_y", ymin)
+    style = info.get("composition_style", "center_symmetry")
+    category = info.get("subject_category", "people")
 
+    # 換算主角像素範圍
     s_top = (ymin / 1000.0) * orig_h
     s_bottom = (ymax / 1000.0) * orig_h
     s_left = (xmin / 1000.0) * orig_w
@@ -144,7 +174,9 @@ def calculate_adaptive_crop(img_size: tuple[int, int], target_ratio: float, info
 
     s_cx = (s_left + s_right) / 2.0
     s_w = s_right - s_left
+    s_h = s_bottom - s_top
 
+    # 1. 決定目標比例的最大視窗寬高
     if orig_ratio > target_ratio:
         crop_h = orig_h
         crop_w = crop_h * target_ratio
@@ -152,34 +184,51 @@ def calculate_adaptive_crop(img_size: tuple[int, int], target_ratio: float, info
         crop_w = orig_w
         crop_h = crop_w / target_ratio
 
-    left = s_cx - (crop_w / 2.0)
+    # 2. 依攝影構圖法則決定主角在裁切框內的相對位置
+    if style == "rule_of_thirds_left" and crop_w > s_w * 1.4:
+        target_x_pct = 0.35
+    elif style == "rule_of_thirds_right" and crop_w > s_w * 1.4:
+        target_x_pct = 0.65
+    elif style == "golden_ratio" and crop_w > s_w * 1.3:
+        target_x_pct = 0.38
+    else:
+        target_x_pct = 0.5  # 置中對稱或主體過寬時置中
+
+    # 水平初步定位
+    left = s_cx - (crop_w * target_x_pct)
     right = left + crop_w
 
-    if crop_w >= s_w:
-        if left > s_left:
-            left = s_left - 20
-            right = left + crop_w
-        if right < s_right:
-            right = s_right + 20
-            left = right - crop_w
-
+    # 3. 垂直定位（根據長寬比與主體特性保留透氣空間）
     if target_ratio > 1.3:
-        top = face_top_px - (crop_h * 0.20)
+        # 橫幅（如 16:9）：頭頂上方保留 18% 呼吸留白
+        top = face_top_px - (crop_h * 0.18)
     elif target_ratio < 0.7:
+        # 直幅（如 9:16）：垂直空間充裕，主角放於中下方，完整呈現上方背景
         top = face_top_px - (crop_h * 0.35)
     else:
+        # 標準比例（1:1、3:4、4:3）
         top = face_top_px - (crop_h * 0.25)
 
     bottom = top + crop_h
 
-    if crop_h >= (s_bottom - face_top_px):
+    # 4. 【主角硬性保護機制】：只要視窗裝得下，絕不切進主角框
+    if crop_w >= s_w:
+        if left > s_left:
+            left = s_left - 15
+            right = left + crop_w
+        if right < s_right:
+            right = s_right + 15
+            left = right - crop_w
+
+    if crop_h >= s_h:
         if top > face_top_px:
-            top = face_top_px - 20
+            top = face_top_px - 15
             bottom = top + crop_h
         if bottom < s_bottom:
-            bottom = s_bottom + 20
+            bottom = s_bottom + 15
             top = bottom - crop_h
 
+    # 5. 原圖邊界安全防護
     if left < 0:
         right += -left
         left = 0
@@ -195,7 +244,7 @@ def calculate_adaptive_crop(img_size: tuple[int, int], target_ratio: float, info
     return int(left), int(top), int(right), int(bottom)
 
 def process_single_task(raw_bytes: bytes, file_name: str, target_ratios: dict):
-    """單一圖片任務：AI 解析 + 多尺寸裁切"""
+    """單張照片：完整分析主角與構圖後進行高畫質裁切"""
     with Image.open(io.BytesIO(raw_bytes)) as img:
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
@@ -211,7 +260,7 @@ def process_single_task(raw_bytes: bytes, file_name: str, target_ratios: dict):
             buf = io.BytesIO()
             c.save(buf, format='JPEG', quality=88)
             filename = f"{base_name}_{label}.jpg"
-            results.append((filename, buf.getvalue(), c))
+            results.append((filename, buf.getvalue(), c, info))
             
         return file_name, results
 
@@ -219,8 +268,8 @@ def process_single_task(raw_bytes: bytes, file_name: str, target_ratios: dict):
 
 st.markdown("""
 <div class="hero-container">
-    <div class="hero-title">⚡ AI 智慧多比例攝影裁切神器</div>
-    <p class="hero-subtitle">智能鎖定人物主角群體，極速多核心並行構圖裁切，全面支援手機、平板與電腦！</p>
+    <div class="hero-title">📸 AI 智慧攝影多比例裁切神器</div>
+    <p class="hero-subtitle">智能鎖定【人 ➔ 動物 ➔ 建築 ➔ 車輛】主角群體，嚴格套用攝影構圖法則，完整保護主角不被腰斬！</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -296,27 +345,26 @@ with st.container(border=True):
 
 if uploaded_files and not has_file_count_error:
     with st.container(border=True):
-        st.markdown("#### 🚀 第三步：極速產出")
+        st.markdown("#### 🚀 第三步：開始產出")
         if not selected_ratios:
             st.warning("⚠️ 請在上方第一步中至少勾選一種你想裁切的尺寸規格喔！")
         else:
-            if st.button("⚡ 開始極速並行裁切", type="primary", width="stretch"):
+            if st.button("📸 開始 AI 智慧主角鎖定與攝影裁切", type="primary", width="stretch"):
                 zip_buffer = io.BytesIO()
                 preview_list = []
 
                 progress_bar = st.progress(0.0)
                 status_box = st.empty()
-                status_box.info("🚀 啟動多核心極速處理中...")
+                status_box.info("🧠 啟動多核心構圖神經網絡分析中...")
 
                 t_start = time.time()
                 total_files = len(uploaded_files)
                 completed_count = 0
 
-                # 讀取檔案二進位數據
                 file_items = [(f.read(), f.name) for f in uploaded_files]
 
-                # 4 執行緒平行運算
-                max_workers = min(4, total_files)
+                # 平行 3 執行緒，兼顧速度與辨識精度
+                max_workers = min(3, total_files)
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = [executor.submit(process_single_task, raw_bytes, name, selected_ratios) for raw_bytes, name in file_items]
 
@@ -325,9 +373,11 @@ if uploaded_files and not has_file_count_error:
                             file_name, items = future.result()
                             completed_count += 1
 
-                            for filename, img_bytes, preview_img in items:
+                            for filename, img_bytes, preview_img, info in items:
                                 zip_file.writestr(filename, img_bytes)
-                                preview_list.append((preview_img, filename))
+                                cat = info.get("subject_category", "主角")
+                                style = info.get("composition_style", "構圖")
+                                preview_list.append((preview_img, f"{filename} ({cat}·{style})"))
 
                             progress = completed_count / total_files
                             progress_bar.progress(progress)
@@ -336,7 +386,7 @@ if uploaded_files and not has_file_count_error:
                 elapsed = time.time() - t_start
                 progress_bar.empty()
                 status_box.empty()
-                st.success(f"⚡ 處理完成！共生成 **{len(preview_list)}** 張照片（耗時 {elapsed:.1f} 秒）。")
+                st.success(f"🎉 處理完成！共生成 **{len(preview_list)}** 張照片（耗時 {elapsed:.1f} 秒）。")
 
                 st.download_button(
                     label="📥 一鍵下載所有裁切成果包 (.ZIP)",
@@ -346,7 +396,7 @@ if uploaded_files and not has_file_count_error:
                     width="stretch"
                 )
 
-                st.markdown("##### 🖼️ 裁切成果預覽")
+                st.markdown("##### 🖼️ 裁切成果預覽（標註鎖定主角與攝影構圖法則）")
                 cols_preview = st.columns(3)
                 for idx, (c_img, title) in enumerate(preview_list):
                     with cols_preview[idx % 3]:
