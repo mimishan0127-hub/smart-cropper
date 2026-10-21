@@ -4,7 +4,7 @@ import json
 import time
 import zipfile
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
 import streamlit as st
 from pydantic import BaseModel, Field
@@ -19,7 +19,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 跨平台響應式與質感 CSS
+# 響應式 CSS
 st.markdown("""
 <style>
     .block-container {
@@ -86,16 +86,13 @@ st.markdown("""
 api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
 client = genai.Client(api_key=api_key) if api_key else None
 
-class SingleImageResult(BaseModel):
-    image_index: int = Field(description="0-based index of the uploaded image")
+class GroupSubjectAnalysis(BaseModel):
+    subject_category: str = Field(description="Dominant category: 'people', 'animal', 'architecture', 'vehicle'")
     group_box_2d: list[int] = Field(description="Bounding box of main group [ymin, xmin, ymax, xmax] scaled 0 to 1000")
     face_top_y: int = Field(description="Highest point of faces/heads (0-1000)")
 
-class BatchAnalysisResponse(BaseModel):
-    results: list[SingleImageResult]
-
 def get_ultra_low_res_ai_input(img: Image.Image) -> Image.Image:
-    """極度縮小至最長邊 512px，使網路傳輸與 AI 分析壓在極限 2 秒內"""
+    """縮小至最長邊 512px，使單張上傳體積降至數十 KB，大幅提升速度"""
     max_dim = 512
     w, h = img.size
     if max(w, h) > max_dim:
@@ -103,48 +100,32 @@ def get_ultra_low_res_ai_input(img: Image.Image) -> Image.Image:
         return img.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
     return img
 
-def analyze_all_images_in_one_shot(pil_images: list[Image.Image]) -> dict[int, dict]:
-    """將所有圖片打包成單次 API 請求，徹底消除多重網路往返延遲"""
-    default_res = {i: {"group_box_2d": [250, 200, 950, 950], "face_top_y": 380} for i in range(len(pil_images))}
+def analyze_single_image(pil_img: Image.Image) -> dict:
+    """單張圖片 AI 分析，容錯高且穩定"""
+    default_res = {"subject_category": "people", "group_box_2d": [250, 200, 950, 950], "face_top_y": 380}
     if not client:
         return default_res
 
-    content_payload = []
-    for idx, img in enumerate(pil_images):
-        low_img = get_ultra_low_res_ai_input(img)
-        content_payload.append(f"Image {idx}:")
-        content_payload.append(low_img)
-
+    low_img = get_ultra_low_res_ai_input(pil_img)
     prompt = (
-        "You are an expert photography director. Analyze each image by its index.\n"
-        "1. Detect the main subject group (all people if humans exist, else animals/architecture/vehicles).\n"
-        "2. For each image index, return the bounding box [ymin, xmin, ymax, xmax] (0-1000) and 'face_top_y' (0-1000).\n"
+        "You are an expert photography director. Analyze composition.\n"
+        "1. If humans present, return 'group_box_2d' [ymin, xmin, ymax, xmax] (0-1000) enclosing ALL persons.\n"
+        "2. Identify 'face_top_y' (0-1000).\n"
+        "3. If no humans, apply to animal > architecture > vehicle.\n"
         "Output JSON matching schema."
     )
-    content_payload.append(prompt)
 
     try:
         response = client.models.generate_content(
             model="gemini-3.8-flash",
-            contents=content_payload,
+            contents=[low_img, prompt],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=BatchAnalysisResponse,
+                response_schema=GroupSubjectAnalysis,
                 temperature=0.1
             ),
         )
-        data = json.loads(response.text)
-        res_dict = {}
-        for item in data.get("results", []):
-            idx = item.get("image_index", 0)
-            res_dict[idx] = {
-                "group_box_2d": item.get("group_box_2d", [250, 200, 950, 950]),
-                "face_top_y": item.get("face_top_y", 380)
-            }
-        for i in range(len(pil_images)):
-            if i not in res_dict:
-                res_dict[i] = default_res[i]
-        return res_dict
+        return json.loads(response.text)
     except Exception:
         return default_res
 
@@ -213,29 +194,33 @@ def calculate_adaptive_crop(img_size: tuple[int, int], target_ratio: float, info
 
     return int(left), int(top), int(right), int(bottom)
 
-def execute_crop_task(args):
-    """記憶體並行高速裁切"""
-    img_data, filename_base, target_ratios, info = args
-    with Image.open(io.BytesIO(img_data)) as img:
+def process_single_task(raw_bytes: bytes, file_name: str, target_ratios: dict):
+    """單一圖片任務：AI 解析 + 多尺寸裁切"""
+    with Image.open(io.BytesIO(raw_bytes)) as img:
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
         
-        cropped_results = []
+        base_name = Path(file_name).stem
+        info = analyze_single_image(img)
+        
+        results = []
         for label, ratio in target_ratios.items():
             l, t, r, b = calculate_adaptive_crop(img.size, ratio, info)
             c = img.crop((l, t, r, b))
             
             buf = io.BytesIO()
-            c.save(buf, format='JPEG', quality=85)
-            cropped_results.append((f"{filename_base}_{label}.jpg", buf.getvalue(), c))
-        return cropped_results
+            c.save(buf, format='JPEG', quality=88)
+            filename = f"{base_name}_{label}.jpg"
+            results.append((filename, buf.getvalue(), c))
+            
+        return file_name, results
 
 # ----------------- 介面排版 -----------------
 
 st.markdown("""
 <div class="hero-container">
     <div class="hero-title">⚡ AI 智慧多比例攝影裁切神器</div>
-    <p class="hero-subtitle">全網最速！單次批次神經網路架構，十張照片極速完成。</p>
+    <p class="hero-subtitle">智能鎖定人物主角群體，極速多核心並行構圖裁切，全面支援手機、平板與電腦！</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -311,57 +296,47 @@ with st.container(border=True):
 
 if uploaded_files and not has_file_count_error:
     with st.container(border=True):
-        st.markdown("#### 🚀 第三步：極限速度產出")
+        st.markdown("#### 🚀 第三步：極速產出")
         if not selected_ratios:
             st.warning("⚠️ 請在上方第一步中至少勾選一種你想裁切的尺寸規格喔！")
         else:
-            if st.button("⚡ 開始 30 秒極限高速裁切", type="primary", width="stretch"):
-                t_start = time.time()
-                progress_bar = st.progress(0.1)
-                status_box = st.empty()
-                status_box.info("🧠 [1/3] 正在合併送出給 AI 進行全圖單次極速分析...")
-
-                raw_bytes_list = []
-                pil_list = []
-                names_list = []
-                for f in uploaded_files:
-                    b = f.read()
-                    raw_bytes_list.append(b)
-                    pil_list.append(Image.open(io.BytesIO(b)))
-                    names_list.append(Path(f.name).stem)
-
-                analysis_results = analyze_all_images_in_one_shot(pil_list)
-                progress_bar.progress(0.6)
-                status_box.info("✂️ [2/3] AI 分析完畢，正在啟動多核心記憶體極速裁切...")
-
-                tasks = []
-                for idx in range(len(uploaded_files)):
-                    tasks.append((
-                        raw_bytes_list[idx],
-                        names_list[idx],
-                        selected_ratios,
-                        analysis_results.get(idx, {"group_box_2d": [250, 200, 950, 950], "face_top_y": 380})
-                    ))
-
-                preview_list = []
+            if st.button("⚡ 開始極速並行裁切", type="primary", width="stretch"):
                 zip_buffer = io.BytesIO()
+                preview_list = []
 
-                with ThreadPoolExecutor(max_workers=4) as executor:
-                    cropped_groups = list(executor.map(execute_crop_task, tasks))
+                progress_bar = st.progress(0.0)
+                status_box = st.empty()
+                status_box.info("🚀 啟動多核心極速處理中...")
 
-                progress_bar.progress(0.85)
-                status_box.info("📦 [3/3] 正在極速打包 ZIP 壓縮檔...")
+                t_start = time.time()
+                total_files = len(uploaded_files)
+                completed_count = 0
 
-                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                    for group in cropped_groups:
-                        for filename, img_bytes, preview_img in group:
-                            zip_file.writestr(filename, img_bytes)
-                            preview_list.append((preview_img, filename))
+                # 讀取檔案二進位數據
+                file_items = [(f.read(), f.name) for f in uploaded_files]
+
+                # 4 執行緒平行運算
+                max_workers = min(4, total_files)
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(process_single_task, raw_bytes, name, selected_ratios) for raw_bytes, name in file_items]
+
+                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                        for future in as_completed(futures):
+                            file_name, items = future.result()
+                            completed_count += 1
+
+                            for filename, img_bytes, preview_img in items:
+                                zip_file.writestr(filename, img_bytes)
+                                preview_list.append((preview_img, filename))
+
+                            progress = completed_count / total_files
+                            progress_bar.progress(progress)
+                            status_box.markdown(f"⏳ **已完成 {completed_count} / {total_files} 張**：`{file_name}`")
 
                 elapsed = time.time() - t_start
-                progress_bar.progress(1.0)
+                progress_bar.empty()
                 status_box.empty()
-                st.success(f"⚡ 極限加速成功！共生成 **{len(preview_list)}** 張照片，總耗時僅 **{elapsed:.1f} 秒**！")
+                st.success(f"⚡ 處理完成！共生成 **{len(preview_list)}** 張照片（耗時 {elapsed:.1f} 秒）。")
 
                 st.download_button(
                     label="📥 一鍵下載所有裁切成果包 (.ZIP)",
