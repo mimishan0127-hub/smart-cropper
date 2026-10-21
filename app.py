@@ -18,34 +18,37 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 注入卡片式區塊 CSS
+# 注入跨平台響應式（手機、平板、電腦）CSS
 st.markdown("""
 <style>
+    /* 基礎容器配置 */
     .block-container {
-        padding-top: 2rem;
+        padding-top: 1.5rem;
         padding-bottom: 3rem;
         max-width: 1050px;
     }
-    
-    /* 標題與簡介 */
+
+    /* 頂部 Hero Banner */
     .hero-container {
-        background: linear-gradient(135deg, #f0f7ff 0%, #fdfbf7 100%);
-        border: 1px solid #dbeafe;
+        background: linear-gradient(135deg, #eff6ff 0%, #fdfbf7 100%);
+        border: 1px solid #bfdbfe;
         border-radius: 16px;
-        padding: 24px;
-        margin-bottom: 24px;
+        padding: 20px 24px;
+        margin-bottom: 20px;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
     }
     .hero-title {
-        font-size: 2.2rem;
+        font-size: 2.1rem;
         font-weight: 800;
-        color: #1e40af;
+        color: #1d4ed8;
         margin-bottom: 6px;
+        line-height: 1.2;
     }
     .hero-subtitle {
         color: #4b5563;
-        font-size: 1.05rem;
+        font-size: 1rem;
         margin: 0;
+        line-height: 1.5;
     }
 
     /* 區塊卡片外框 */
@@ -54,17 +57,65 @@ st.markdown("""
         border-radius: 14px;
         border: 1px solid #e5e7eb;
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-        padding: 12px;
-        margin-bottom: 12px;
+        padding: 14px;
+        margin-bottom: 14px;
     }
 
-    /* 尺寸小卡片說明文字 */
+    /* 尺寸卡片說明文字 */
     .ratio-desc {
         color: #6b7280;
-        font-size: 0.82rem;
+        font-size: 0.8rem;
         line-height: 1.3;
         margin-top: -6px;
-        min-height: 38px;
+        margin-bottom: 10px;
+    }
+
+    /* ================= 📱 手機與平板專用響應式斷點 ================= */
+    
+    /* 針對平板（直向）與大型手機螢幕 (螢幕寬度小於 992px) */
+    @media (max-width: 992px) {
+        .hero-title {
+            font-size: 1.7rem;
+        }
+        .hero-subtitle {
+            font-size: 0.95rem;
+        }
+    }
+
+    /* 針對一般手機螢幕 (螢幕寬度小於 768px) */
+    @media (max-width: 768px) {
+        .block-container {
+            padding-left: 0.8rem !important;
+            padding-right: 0.8rem !important;
+            padding-top: 1rem !important;
+        }
+        .hero-container {
+            padding: 16px;
+            border-radius: 12px;
+        }
+        .hero-title {
+            font-size: 1.4rem;
+        }
+        .hero-subtitle {
+            font-size: 0.88rem;
+        }
+        
+        /* 手機端讓 Streamlit 的 columns 自動垂直堆疊，避免被橫向擠爆 */
+        div[data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap !important;
+            gap: 8px !important;
+        }
+        div[data-testid="stColumn"] {
+            min-width: 100% !important;
+            flex: 1 1 100% !important;
+        }
+        
+        /* 按鈕與勾選框在手機上擴大觸控區 */
+        button {
+            padding-top: 10px !important;
+            padding-bottom: 10px !important;
+            font-size: 1rem !important;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -191,7 +242,7 @@ def calculate_adaptive_crop(img_size: tuple[int, int], target_ratio: float, info
 st.markdown("""
 <div class="hero-container">
     <div class="hero-title">✨ AI 智慧多比例攝影裁切神器</div>
-    <p class="hero-subtitle">智能鎖定人物主角群體，自動套用最佳攝影構圖，一鍵批量產出多種社群完美比例！</p>
+    <p class="hero-subtitle">智能鎖定人物主角群體，自動套用最佳攝影構圖，一鍵批量產出多種社群完美比例！支援手機、平板與電腦全平台操作。</p>
 </div>
 """, unsafe_allow_html=True)
 
