@@ -4,7 +4,7 @@ import json
 import time
 import zipfile
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
 import streamlit as st
 from pydantic import BaseModel, Field
@@ -19,7 +19,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 跨平台響應式與極致簡潔 CSS
+# 跨平台響應式與質感 CSS
 st.markdown("""
 <style>
     .block-container {
@@ -202,7 +202,6 @@ def calculate_adaptive_crop(img_size: tuple[int, int], target_ratio: float, info
 def process_one_image_task(file, target_ratios):
     """單張圖片的獨立工作（供多執行緒並行）"""
     with Image.open(file) as img:
-        # 如果是 RGBA 或 P 模式先轉換，避免裁切時重複開銷
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
             
@@ -215,12 +214,11 @@ def process_one_image_task(file, target_ratios):
             cropped = img.crop((l, t, r, b))
             
             img_byte_arr = io.BytesIO()
-            # 極速儲存：品質 88，不啟用耗 CPU 的 optimize
             cropped.save(img_byte_arr, format='JPEG', quality=88)
             filename = f"{base_name}_{label}.jpg"
             results.append((filename, img_byte_arr.getvalue(), cropped))
             
-        return results
+        return file.name, results
 
 # ----------------- 介面排版 -----------------
 
@@ -311,25 +309,36 @@ if uploaded_files and not has_file_count_error:
                 zip_buffer = io.BytesIO()
                 preview_list = []
                 
+                # 初始化進度條與狀態提示容器
+                progress_bar = st.progress(0.0)
                 status_box = st.empty()
-                status_box.info("🚀 啟動多核心並行處理中，請稍候...")
+                status_box.info("🚀 啟動多核心並行處理中...")
 
                 t_start = time.time()
                 total_files = len(uploaded_files)
+                completed_count = 0
                 
-                # 多執行緒並行：3 個執行緒同時連線 Google AI 與裁切
                 max_workers = min(3, total_files)
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = [executor.submit(process_one_image_task, f, selected_ratios) for f in uploaded_files]
                     
                     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                        for future in futures:
-                            items = future.result()
+                        for future in as_completed(futures):
+                            file_name, items = future.result()
+                            completed_count += 1
+                            
+                            # 寫入成果
                             for filename, img_bytes, preview_img in items:
                                 zip_file.writestr(filename, img_bytes)
                                 preview_list.append((preview_img, filename))
+                            
+                            # 更新進度條與提示文字
+                            progress = completed_count / total_files
+                            progress_bar.progress(progress)
+                            status_box.markdown(f"⏳ **處理進度：{completed_count} / {total_files} 張**（已完成 `{file_name}`）")
 
                 elapsed = time.time() - t_start
+                progress_bar.empty()
                 status_box.empty()
                 st.success(f"⚡ 極速處理完成！共生成 **{len(preview_list)}** 張照片（耗時僅 {elapsed:.1f} 秒）。")
 
