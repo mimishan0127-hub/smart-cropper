@@ -1,4 +1,4 @@
 google-genai
 pillow
 pydantic
-streamlit
+streamlit>=1.40.0
