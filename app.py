@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
+# ----------------- 頁面基本配置 -----------------
 st.set_page_config(
     page_title="AI 智慧多比例攝影裁切神器",
     page_icon="⚡",
@@ -18,7 +19,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 響應式與現代感 CSS
+# 跨平台響應式與質感 CSS
 st.markdown("""
 <style>
     .block-container {
@@ -94,7 +95,7 @@ class BatchAnalysisResponse(BaseModel):
     results: list[SingleImageResult]
 
 def get_ultra_low_res_ai_input(img: Image.Image) -> Image.Image:
-    """極度縮小至最長邊 512px，使網路傳輸與 AI 分析壓在 2 秒內"""
+    """極度縮小至最長邊 512px，使網路傳輸與 AI 分析壓在極限 2 秒內"""
     max_dim = 512
     w, h = img.size
     if max(w, h) > max_dim:
@@ -111,14 +112,14 @@ def analyze_all_images_in_one_shot(pil_images: list[Image.Image]) -> dict[int, d
     content_payload = []
     for idx, img in enumerate(pil_images):
         low_img = get_ultra_low_res_ai_input(img)
-        content_payload.append(f"--- IMAGE INDEX: {idx} ---")
+        content_payload.append(f"Image {idx}:")
         content_payload.append(low_img)
 
     prompt = (
-        "You are an expert photography director. Analyze each image by its given index.\n"
+        "You are an expert photography director. Analyze each image by its index.\n"
         "1. Detect the main subject group (all people if humans exist, else animals/architecture/vehicles).\n"
-        "2. For each image, provide the bounding box [ymin, xmin, ymax, xmax] (0-1000) and 'face_top_y' (0-1000).\n"
-        "Output all items in the 'results' list matching the schema."
+        "2. For each image index, return the bounding box [ymin, xmin, ymax, xmax] (0-1000) and 'face_top_y' (0-1000).\n"
+        "Output JSON matching schema."
     )
     content_payload.append(prompt)
 
@@ -140,7 +141,6 @@ def analyze_all_images_in_one_shot(pil_images: list[Image.Image]) -> dict[int, d
                 "group_box_2d": item.get("group_box_2d", [250, 200, 950, 950]),
                 "face_top_y": item.get("face_top_y", 380)
             }
-        # 補齊遺漏項目
         for i in range(len(pil_images)):
             if i not in res_dict:
                 res_dict[i] = default_res[i]
@@ -235,7 +235,7 @@ def execute_crop_task(args):
 st.markdown("""
 <div class="hero-container">
     <div class="hero-title">⚡ AI 智慧多比例攝影裁切神器</div>
-    <p class="hero-subtitle">全網最速！單次批次神經網路架構，十張照片 15~30 秒極限極速完成。</p>
+    <p class="hero-subtitle">全網最速！單次批次神經網路架構，十張照片極速完成。</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -258,9 +258,9 @@ with st.container(border=True):
     with col_t2:
         c_btn1, c_btn2 = st.columns(2)
         with c_btn1:
-            st.button("全選尺寸", on_click=set_all_checkboxes, args=(True,), use_container_width=True)
+            st.button("全選尺寸", on_click=set_all_checkboxes, args=(True,), width="stretch")
         with c_btn2:
-            st.button("清除勾選", on_click=set_all_checkboxes, args=(False,), use_container_width=True)
+            st.button("清除勾選", on_click=set_all_checkboxes, args=(False,), width="stretch")
 
     cols = st.columns(5)
     selected_ratios = {}
@@ -315,13 +315,12 @@ if uploaded_files and not has_file_count_error:
         if not selected_ratios:
             st.warning("⚠️ 請在上方第一步中至少勾選一種你想裁切的尺寸規格喔！")
         else:
-            if st.button("⚡ 開始 30 秒極限高速裁切", type="primary", use_container_width=True):
+            if st.button("⚡ 開始 30 秒極限高速裁切", type="primary", width="stretch"):
                 t_start = time.time()
                 progress_bar = st.progress(0.1)
                 status_box = st.empty()
                 status_box.info("🧠 [1/3] 正在合併送出給 AI 進行全圖單次極速分析...")
 
-                # 預讀入記憶體
                 raw_bytes_list = []
                 pil_list = []
                 names_list = []
@@ -331,12 +330,10 @@ if uploaded_files and not has_file_count_error:
                     pil_list.append(Image.open(io.BytesIO(b)))
                     names_list.append(Path(f.name).stem)
 
-                # 單次請求打包所有圖片
                 analysis_results = analyze_all_images_in_one_shot(pil_list)
                 progress_bar.progress(0.6)
                 status_box.info("✂️ [2/3] AI 分析完畢，正在啟動多核心記憶體極速裁切...")
 
-                # 準備多執行緒裁切
                 tasks = []
                 for idx in range(len(uploaded_files)):
                     tasks.append((
@@ -371,11 +368,11 @@ if uploaded_files and not has_file_count_error:
                     data=zip_buffer.getvalue(),
                     file_name="smart_cropped_photos.zip",
                     mime="application/zip",
-                    use_container_width=True
+                    width="stretch"
                 )
 
                 st.markdown("##### 🖼️ 裁切成果預覽")
                 cols_preview = st.columns(3)
                 for idx, (c_img, title) in enumerate(preview_list):
                     with cols_preview[idx % 3]:
-                        st.image(c_img, caption=title, use_container_width=True)
+                        st.image(c_img, caption=title, width="stretch")
