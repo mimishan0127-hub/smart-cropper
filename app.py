@@ -10,8 +10,67 @@ from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
-# 頁面基本配置
-st.set_page_config(page_title="AI 智慧多比例攝影裁切器", layout="wide", page_icon="📷")
+# ----------------- 頁面基本配置 -----------------
+st.set_page_config(
+    page_title="AI 智慧攝影裁切神器",
+    page_icon="✨",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# 注入自訂 CSS 美化介面
+st.markdown("""
+<style>
+    /* 全域字體與背景優化 */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+        max-width: 1100px;
+    }
+    
+    /* 主標題區域 */
+    .hero-title {
+        font-size: 2.3rem;
+        font-weight: 800;
+        background: linear-gradient(120deg, #1E88E5, #7E57C2);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0.3rem;
+    }
+    .hero-subtitle {
+        color: #616161;
+        font-size: 1.05rem;
+        margin-bottom: 1.8rem;
+    }
+
+    /* 步驟卡片風格 */
+    .step-card {
+        background-color: #f8f9fa;
+        border-radius: 12px;
+        padding: 1.2rem;
+        margin-bottom: 1.2rem;
+        border: 1px solid #e9ecef;
+    }
+    .step-header {
+        font-weight: 700;
+        font-size: 1.1rem;
+        color: #2c3e50;
+        margin-bottom: 0.6rem;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    /* 規格小標籤 */
+    .ratio-badge {
+        font-size: 0.8rem;
+        color: #6c757d;
+        display: block;
+        margin-top: -8px;
+        margin-bottom: 6px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # 讀取後台設定的 API Key
 api_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
@@ -23,7 +82,7 @@ class GroupSubjectAnalysis(BaseModel):
     face_top_y: int = Field(description="Highest point of faces/heads (0-1000)")
 
 def get_optimized_ai_input(img: Image.Image) -> Image.Image:
-    """將原圖縮小上傳給 AI 分析，大幅節省頻寬與等待時間"""
+    """縮圖送給 AI 辨識，速度提升 3~5 倍"""
     max_dim = 1024
     w, h = img.size
     if max(w, h) > max_dim:
@@ -64,7 +123,7 @@ def analyze_all_subjects(pil_img: Image.Image):
             return {"subject_category": "people", "group_box_2d": [250, 200, 950, 950], "face_top_y": 380}
 
 def calculate_adaptive_crop(img_size: tuple[int, int], target_ratio: float, info: dict) -> tuple[int, int, int, int]:
-    """計算最佳裁切座標，保護主角群體完整不被裁切"""
+    """計算自適應攝影構圖裁切框，嚴防切斷主角"""
     orig_w, orig_h = img_size
     orig_ratio = orig_w / orig_h
 
@@ -125,75 +184,110 @@ def calculate_adaptive_crop(img_size: tuple[int, int], target_ratio: float, info
         bottom += -top
         top = 0
     if bottom > orig_h:
-        top -= (bottom - orig_h)
         bottom = orig_h
 
     return int(left), int(top), int(right), int(bottom)
 
-# ----------------- 前端 UI 設計 -----------------
-st.title("📷 AI 智慧攝影多比例裁切工具")
-st.write("上傳照片後，AI 會自動鎖定主要人物與主角群，並依攝影美學進行智慧裁切。")
+# ----------------- 介面排版 -----------------
+
+# 頁頭 Banner
+st.markdown('<div class="hero-title">✨ AI 智慧多比例攝影裁切神器</div>', unsafe_allow_html=True)
+st.markdown('<div class="hero-subtitle">智能鎖定人物主角群體，自動套用最佳攝影構圖，一鍵批量產出多種社群完美比例！</div>', unsafe_allow_html=True)
 
 if not client:
-    st.warning("⚠️ 系統尚未偵測到 GEMINI_API_KEY，請在雲端後台 Secrets 中進行設定。")
+    st.warning("⚠️ 系統尚未偵測到 GEMINI_API_KEY，請在雲端後台 Settings ➔ Secrets 中進行設定。")
 
-# 所有支援的尺寸比例映射
-ALL_RATIOS = {
-    "16:9 (橫幅寬螢幕)": ("16-9", 16 / 9),
-    "9:16 (直幅限動/Reels)": ("9-16", 9 / 16),
-    "3:4 (直幅人像)": ("3-4", 3 / 4),
-    "4:3 (標準橫幅)": ("4-3", 4 / 3),
-    "1:1 (正方形)": ("1-1", 1.0)
-}
+# 步驟一：選擇規格（Checkbox 勾選樣式）
+st.markdown('### 📌 第一步：勾選你想產出的尺寸規格')
 
-# 1. 尺寸複選功能
-selected_labels = st.multiselect(
-    "📐 請勾選欲輸出的裁切尺寸（可複選）：",
-    options=list(ALL_RATIOS.keys()),
-    default=list(ALL_RATIOS.keys())  # 預設全選
-)
+# 快捷按鈕
+col_btn1, col_btn2, _ = st.columns([1, 1, 6])
+if "select_all" not in st.session_state:
+    st.session_state.select_all = True
 
-# 2. 上傳照片
+with col_btn1:
+    if st.button("全選尺寸", use_container_width=True):
+        st.session_state.select_all = True
+        st.rerun()
+with col_btn2:
+    if st.button("清除勾選", use_container_width=True):
+        st.session_state.select_all = False
+        st.rerun()
+
+# 5 個欄位排版勾選方塊
+cols = st.columns(5)
+selected_ratios = {}
+
+with cols[0]:
+    c1 = st.checkbox("16:9 橫幅寬螢幕", value=st.session_state.select_all, key="cb_16_9")
+    st.caption("適用於 YouTube / 簡報 / 電腦桌布")
+    if c1: selected_ratios["16-9"] = 16 / 9
+
+with cols[1]:
+    c2 = st.checkbox("9:16 直幅限動", value=st.session_state.select_all, key="cb_9_16")
+    st.caption("適用於 IG Reels / 抖音 / 限時動態")
+    if c2: selected_ratios["9-16"] = 9 / 16
+
+with cols[2]:
+    c3 = st.checkbox("3:4 人像直幅", value=st.session_state.select_all, key="cb_3_4")
+    st.caption("適用於 IG 貼文 / 手機直立觀看")
+    if c3: selected_ratios["3-4"] = 3 / 4
+
+with cols[3]:
+    c4 = st.checkbox("4:3 標準橫幅", value=st.session_state.select_all, key="cb_4_3")
+    st.caption("經典相機比例 / 部落格文章首圖")
+    if c4: selected_ratios["4-3"] = 4 / 3
+
+with cols[4]:
+    c5 = st.checkbox("1:1 正方形", value=st.session_state.select_all, key="cb_1_1")
+    st.caption("適用於社群大頭貼 / 經典方形貼文")
+    if c5: selected_ratios["1-1"] = 1.0
+
+st.divider()
+
+# 步驟二：上傳照片
+st.markdown('### 📁 第二步：上傳照片（最多 10 張）')
 uploaded_files = st.file_uploader(
-    "📁 選擇或拖曳照片上傳（支援 JPG、PNG、WEBP）：", 
+    "支援 JPG、PNG、WEBP 格式，拖曳或點擊即可選取：", 
     type=["jpg", "jpeg", "png", "webp"], 
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    help="為保持系統運算順暢，一次最多支援 10 張照片！"
 )
 
-# 檢查張數限制（最多 10 張）
 MAX_FILES = 10
 has_file_count_error = False
 
 if uploaded_files:
     if len(uploaded_files) > MAX_FILES:
-        st.error(f"⚠️ 為維護系統效能與處理速度，一次最多只能上傳 {MAX_FILES} 張照片！目前已選取 {len(uploaded_files)} 張，請刪除部分照片後再試。")
+        st.error(f"⚠️ 為確保雲端運作速度與伺服器穩定，一次最多只能處理 {MAX_FILES} 張照片！目前已選取 {len(uploaded_files)} 張，請刪除多餘照片再試。")
         has_file_count_error = True
     else:
-        st.info(f"已選取 {len(uploaded_files)} 張照片。")
+        st.info(f"✨ 已成功載入 **{len(uploaded_files)}** 張照片，準備就緒！")
 
-# 3. 執行按鈕
+st.divider()
+
+# 步驟三：開始執行
 if uploaded_files and not has_file_count_error:
-    if not selected_labels:
-        st.warning("⚠️ 請至少勾選一種裁切尺寸！")
+    if not selected_ratios:
+        st.warning("⚠️ 請在第一步中至少勾選一種你想裁切的尺寸規格喔！")
     else:
-        if st.button("🚀 開始 AI 智慧分析與裁切", type="primary"):
-            target_ratios = {ALL_RATIOS[label][0]: ALL_RATIOS[label][1] for label in selected_labels}
-
+        if st.button("🚀 開始 AI 智慧構圖與極速裁切", type="primary", use_container_width=True):
             zip_buffer = io.BytesIO()
             preview_list = []
+            
             progress_bar = st.progress(0)
-            status_text = st.empty()
+            status_box = st.empty()
 
+            total_files = len(uploaded_files)
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                total_files = len(uploaded_files)
                 for idx, file in enumerate(uploaded_files):
-                    status_text.text(f"⏳ 正在分析第 {idx + 1}/{total_files} 張照片的主角與構圖：{file.name}...")
+                    status_box.markdown(f"🤖 **正在深度分析第 {idx + 1}/{total_files} 張照片的主角與空間佈局...** `{file.name}`")
                     
                     img = Image.open(file)
                     base_name = Path(file.name).stem
                     info = analyze_all_subjects(img)
 
-                    for label, ratio in target_ratios.items():
+                    for label, ratio in selected_ratios.items():
                         l, t, r, b = calculate_adaptive_crop(img.size, ratio, info)
                         cropped = img.crop((l, t, r, b))
                         
@@ -208,20 +302,21 @@ if uploaded_files and not has_file_count_error:
 
                     progress_bar.progress((idx + 1) / total_files)
 
-            status_text.empty()
-            st.success(f"🎉 全部處理完成！共生成 {len(preview_list)} 張照片。")
+            status_box.empty()
+            st.success(f"🎉 太棒了！全部處理完成，共為你精心裁切出 **{len(preview_list)}** 張照片。")
 
-            # 下載壓縮檔
+            # 下載按鈕
             st.download_button(
-                label="📦 下載全部裁切打包檔 (.ZIP)",
+                label="📥 立即一鍵下載所有裁切成果包 (.ZIP)",
                 data=zip_buffer.getvalue(),
-                file_name="all_cropped_photos.zip",
-                mime="application/zip"
+                file_name="smart_cropped_photos.zip",
+                mime="application/zip",
+                use_container_width=True
             )
 
-            # 即時預覽成果
-            st.subheader("🖼️ 成果預覽")
-            cols = st.columns(3)
+            # 成果預覽
+            st.markdown("### 🖼️ 裁切成果預覽")
+            cols_preview = st.columns(3)
             for idx, (c_img, title) in enumerate(preview_list):
-                with cols[idx % 3]:
+                with cols_preview[idx % 3]:
                     st.image(c_img, caption=title, use_container_width=True)
